@@ -90,19 +90,18 @@
     raw.forEach((r,i)=>{plan.total++;try{const q=normalize(r);if(seen.has(q.id))throw Error('文件内题号重复');seen.add(q.id);if(byId.has(q.id)){if(equivalent(q,byId.get(q.id)))plan.skipped++;else throw Error(`题号${q.id}已存在且内容不同，请用新题号`);}else plan.rows.push(q);}catch(e){plan.errors.push(`${kind==='csv'?'数据行'+(i+2):'第'+(i+1)+'题'}：${e.message}`);}});
     return plan;
   }
-  function select(bank,{level='hard',topic='全部专题',mode='考试',count=5},mistakes,rng=Math.random){
-    const period=arguments[1]?.period||'全部时期';
-    const pool=bank.filter(q=>(level==='all'||q.level===level)&&(topic==='全部专题'||(q.topic||'综合')===topic)&&(period==='全部时期'||(q.period||'未分类时期')===period)&&(mode==='错题复习'?mistakes[q.id]&&!mistakes[q.id].resolved:!q.archived));
+  function select(bank,{level='hard',topic='全部专题',mode='考试',count=5,period='全部时期',exclude=null},mistakes,rng=Math.random){
+    const pool=bank.filter(q=>(level==='all'||q.level===level)&&(topic==='全部专题'||(q.topic||'综合')===topic)&&(period==='全部时期'||(q.period||'未分类时期')===period)&&(mode==='错题复习'?mistakes[q.id]&&!mistakes[q.id].resolved:!q.archived)&&(!exclude||!exclude.has(q.id)));
     return shuffle(pool,rng).slice(0,count).map(q=>{const out=clone(q),order=shuffle(['A','B','C','D'],rng);out.options=Object.fromEntries(order.map((old,i)=>['ABCD'[i],q.options[old]]));out.answer='ABCD'[order.indexOf(q.answer)];if(q.option_explanations)out.option_explanations=Object.fromEntries(order.map((old,i)=>['ABCD'[i],q.option_explanations[old]]));return out;});
   }
-  function report(session){const details=session.paper.map(q=>{const chosen=session.answers[q.id];if(!chosen)throw Error('本轮尚未完成');return{id:q.id,question:q.question,chosen,answer:q.answer,correct:chosen===q.answer,chosen_text:q.options[chosen],answer_text:q.options[q.answer],options:q.options};});const correct=details.filter(x=>x.correct).length;return{id:session.id,time:new Date().toISOString(),mode:session.mode,level:session.level,topic:session.topic,period:session.period||'全部时期',total:details.length,correct,wrong:details.length-correct,score:Math.round(correct/details.length*1000)/10,details};}
+  function report(session){const details=session.paper.map(q=>{const chosen=session.answers[q.id];if(!chosen)throw Error('本轮尚未完成');return{id:q.id,question:q.question,chosen,answer:q.answer,correct:chosen===q.answer,chosen_text:chosen==='?'?'不知道':q.options[chosen],answer_text:q.options[q.answer],options:q.options};});const correct=details.filter(x=>x.correct).length;return{id:session.id,time:new Date().toISOString(),mode:session.mode,level:session.level,topic:session.topic,period:session.period||'全部时期',total:details.length,correct,wrong:details.length-correct,score:Math.round(correct/details.length*1000)/10,details};}
   function saveResult(state,result){const out=clone(state);if(out.scores.some(x=>x.id===result.id))return out;out.scores.push(result);result.details.forEach(row=>{if(!row.correct){const old=out.mistakes[row.id]||{};out.mistakes[row.id]={...row,wrong_count:(old.wrong_count||0)+1,last_time:result.time,resolved:false};}else if(out.mistakes[row.id])out.mistakes[row.id].resolved=true;});out.session=null;return out;}
   function validState(s){
     if(!s||s.version!==1||!Array.isArray(s.scores)||!s.mistakes||typeof s.mistakes!=='object'||Array.isArray(s.mistakes))throw Error('学习记录格式不正确');
     if(s.custom!=null){if(!Array.isArray(s.custom))throw Error('自定义题库格式不正确');s.custom.forEach(validate);}
     for(const r of s.scores)if(!r||typeof r.score!=='number'||typeof r.time!=='string'||typeof r.total!=='number')throw Error('成绩记录格式不正确');
     for(const r of Object.values(s.mistakes))if(!r||typeof r.resolved!=='boolean'||typeof r.wrong_count!=='number')throw Error('错题记录格式不正确');
-    if(s.session){const r=s.session;if(!Array.isArray(r.paper)||!r.paper.length||!Number.isInteger(r.index)||r.index<0||r.index>=r.paper.length||!r.answers||typeof r.answers!=='object')throw Error('未完成试炼格式不正确');r.paper.forEach(validate);const ids=new Set(r.paper.map(q=>q.id));if(ids.size!==r.paper.length||Object.entries(r.answers).some(([id,v])=>!ids.has(id)||!['A','B','C','D'].includes(v)))throw Error('未完成试炼答案不正确');}
+    if(s.session){const r=s.session;if(!Array.isArray(r.paper)||!r.paper.length||!Number.isInteger(r.index)||r.index<0||r.index>=r.paper.length||!r.answers||typeof r.answers!=='object')throw Error('未完成试炼格式不正确');r.paper.forEach(validate);const ids=new Set(r.paper.map(q=>q.id));if(ids.size!==r.paper.length||Object.entries(r.answers).some(([id,v])=>!ids.has(id)||!['A','B','C','D','?'].includes(v)))throw Error('未完成试炼答案不正确');}
     return s;
   }
   const api={levels,clone,shuffle,validate,normalize,parseCSV,importPlan,select,report,saveResult,validState};global.TrialCore=api;if(typeof module!=='undefined')module.exports=api;
@@ -112,7 +111,7 @@
   'use strict';
   const C=TrialCore,B=QUESTION_BANK,KEY='sanguo-night-v1';
   const el=document.querySelector('#app'),notice=document.querySelector('#notice');
-  let state={version:1,scores:[],mistakes:{},custom:[],session:null,settings:{theme:'dark',level:'hard',topic:'全部专题',period:'全部时期',count:5,mode:'考试'}},selected='',plan=null,lastResult=null,storageOK=true,blockedStorage=false;
+  let state={version:1,scores:[],mistakes:{},custom:[],session:null,settings:{theme:'dark',level:'hard',topic:'全部专题',period:'全部时期',count:5,mode:'考试',noRepeat:false}},selected='',plan=null,lastResult=null,storageOK=true,blockedStorage=false;
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const bank=()=>[...B,...state.custom];
   const active=()=>bank().filter(q=>!q.archived);
@@ -130,27 +129,49 @@
   async function confirmAction(title,text){const dialog=document.querySelector('#confirm-dialog');document.querySelector('#dialog-title').textContent=title;document.querySelector('#dialog-text').textContent=text;dialog.returnValue='cancel';dialog.showModal();return new Promise(resolve=>dialog.addEventListener('close',()=>resolve(dialog.returnValue==='ok'),{once:true}));}
   function head(title,subtitle){return `<span class="eyebrow">三国志 · 夜读</span><h1>${esc(title)}</h1><p class="subtitle">${esc(subtitle)}</p>`;}
   let currentPage=(location.hash.slice(1)||'home').split('/')[0];
-  function route(target){const page=typeof target==='string'?target:currentPage;currentPage=page;document.querySelectorAll('.bottom-nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===page||(page==='quiz'&&a.dataset.page==='home')));selected='';({home,mistakes,history,library,quiz,result}[page]||home)();window.scrollTo(0,0);}
+  function route(target){const page=typeof target==='string'?target:currentPage;currentPage=page;notice.textContent='';document.querySelectorAll('.bottom-nav a').forEach(a=>a.classList.toggle('active',a.dataset.page===page||(page==='quiz'&&a.dataset.page==='home')));selected='';({home,mistakes,history,library,quiz,result}[page]||home)();window.scrollTo(0,0);}
   function go(page){route(page);}
   window.addEventListener('hashchange',()=>route((location.hash.slice(1)||'home').split('/')[0]));
   document.querySelectorAll('.bottom-nav a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();go(a.dataset.page);}));
   function home(){
     const topics=['全部专题',...new Set(active().map(q=>q.topic||'综合'))];const periods=['全部时期',"184—189 黄巾与汉末危机","189—196 董卓与诸侯割据","197—207 官渡与河北归曹","194—208 江东与淮南经营","208—215 赤壁与荆益格局","216—223 汉中襄樊与三国建国","223—234 魏蜀吴对峙与诸葛北伐","235—249 魏明帝后政与三国中期","249—263 权臣更替与三国晚局","264—280 吴晋对峙与统一战争"];const st=state.settings;
+    const doneIds=new Set(state.scores.flatMap(r=>r.details||[]).map(d=>d.id).filter(Boolean));
+    const levelStats={};
+    Object.keys(C.levels).forEach(k=>{
+      const total=active().filter(q=>q.level===k).length;
+      const done=active().filter(q=>q.level===k&&doneIds.has(q.id)).length;
+      levelStats[k]={total,done};
+    });
     el.innerHTML=`<section class="hero"><span class="eyebrow">一卷史书 · 片刻试炼</span><h1>夜静，<br>再辨一局。</h1><div class="hero-line"></div><p>读史不急于求胜。<br>用几个问题，想清一场成败。</p></section>
       <div class="stats"><div class="stat"><strong>${active().length}</strong><span>可练题目</span></div><div class="stat"><strong>${pending().length}</strong><span>待复习错题</span></div><div class="stat"><strong>${state.scores.length}</strong><span>已完成试炼</span></div></div>
       ${state.session?`<section class="card"><span class="pill gold">未完的题卷</span><h3 style="margin:12px 0">${esc(C.levels[state.session.level]||'混合')} · 已答${Object.keys(state.session.answers).length}/${state.session.paper.length}题</h3><div class="row"><button class="primary" data-act="resume">继续上次</button><button class="plain" data-act="discard">结束这一轮</button></div></section>`:''}
       <section class="card"><div class="row"><h2>今晚练什么</h2><span class="pill">默认 5 题</span></div><label class="section-label">练习模式</label><div class="segmented">${['考试','错题复习'].map(x=>`<button data-act="mode" data-value="${x}" class="${st.mode===x?'selected':''}" aria-pressed="${st.mode===x}">${x==='考试'?'随机试炼':x}</button>`).join('')}</div>
-      <label class="section-label">难度</label><div class="levels">${Object.entries(C.levels).map(([key,name])=>`<button class="level ${st.level===key?'selected':''}" data-act="level" data-value="${key}" aria-pressed="${st.level===key}">${name}<span>${{easy:'熟悉史实',medium:'梳理因果',hard:'辨析谋略',expert:'考究细节'}[key]}</span></button>`).join('')}</div>
+      <label class="section-label">难度</label><div class="levels">${Object.entries(C.levels).map(([key,name])=>{
+        const stat=levelStats[key]||{total:0,done:0};
+        return `<button class="level ${st.level===key?'selected':''}" data-act="level" data-value="${key}" aria-pressed="${st.level===key}">${name}<span>共${stat.total}题 · 已做${stat.done}题</span></button>`;
+      }).join('')}</div>
       <label class="check"><input id="mixed" type="checkbox" ${st.level==='all'?'checked':''}>四档难度混合抽题</label>
+      <label class="check"><input id="no-repeat" type="checkbox" ${st.noRepeat?'checked':''}>不出重复题目（已做过的题不再抽到）</label>
       <label class="section-label" for="period">历史时期（可与难度、专题组合）</label><select id="period">${periods.map(p=>`<option value="${esc(p)}" ${st.period===p?'selected':''}>${esc(p)}</option>`).join('')}</select><div class="form-row"><div><label class="section-label" for="topic">专题</label><select id="topic">${topics.map(t=>`<option ${st.topic===t?'selected':''}>${esc(t)}</option>`).join('')}</select></div><div><label class="section-label" for="count">每轮题数</label><select id="count">${[5,10,20].map(n=>`<option value="${n}" ${st.count===n?'selected':''}>${n} 题</option>`).join('')}</select></div></div>
-      <div class="wide-action"><button class="primary" data-act="start">展开题卷 →</button></div><p class="hint">部分高级题附逐项辨析。题目不足时按实际题数评分。</p></section>
+      <div class="wide-action">${state.session?`<button class="primary" disabled>先继续或结束上方未完题卷</button>`:`<button class="primary" data-act="start">展开题卷 →</button>`}</div><p class="hint">部分高级题附逐项辨析。题目不足时按实际题数评分。</p></section>
       <div class="row"><p class="hint">夜间／日间模式 · 无计时压力</p><button class="plain" data-act="theme">${st.theme==='dark'?'切换日间模式':'切换夜间模式'}</button></div><p class="hint" style="margin-top:18px">学习记录保存在此设备、此浏览器中。手机与电脑不会自动同步，可在题库页导入 / 导出备份。</p>`;
-    document.querySelector('#period').addEventListener('change',e=>{state.settings.period=e.target.value;persist();});document.querySelector('#topic').addEventListener('change',e=>{state.settings.topic=e.target.value;persist();});document.querySelector('#count').addEventListener('change',e=>{state.settings.count=Number(e.target.value);persist();});document.querySelector('#mixed').addEventListener('change',e=>{state.settings.level=e.target.checked?'all':'hard';persist();home();});
+    document.querySelector('#period').addEventListener('change',e=>{state.settings.period=e.target.value;persist();});document.querySelector('#topic').addEventListener('change',e=>{state.settings.topic=e.target.value;persist();});document.querySelector('#count').addEventListener('change',e=>{state.settings.count=Number(e.target.value);persist();});document.querySelector('#mixed').addEventListener('change',e=>{state.settings.level=e.target.checked?'all':'hard';persist();home();});document.querySelector('#no-repeat').addEventListener('change',e=>{state.settings.noRepeat=e.target.checked;persist();});
   }
-  async function start(){if(state.session){msg('还有一轮未完成，请先继续或结束上次题卷。');home();return;}const st=state.settings,paper=C.select(bank(),st,state.mistakes);if(!paper.length){msg('当前范围没有可练题目。试试全部专题或混合难度。');return;}state.session={id:Date.now()+'-'+Math.random().toString(36).slice(2),paper,index:0,answers:{},mode:st.mode,level:st.level,topic:st.topic,period:st.period,started:new Date().toISOString()};persist();go('quiz');}
+  async function start(){
+    if(state.session){msg('还有一轮未完成，请先继续或结束上次题卷。');home();return;}
+    const st=state.settings;
+    let exclude=null;
+    if(st.noRepeat&&st.mode==='考试'){exclude=new Set(state.scores.flatMap(r=>r.details||[]).map(d=>d.id).filter(Boolean));}
+    const paper=C.select(bank(),{...st,exclude},state.mistakes);
+    if(!paper.length){msg('当前范围没有可练题目。试试关闭“不出重复题目”或更换范围。');return;}
+    state.session={id:Date.now()+'-'+Math.random().toString(36).slice(2),paper,index:0,answers:{},mode:st.mode,level:st.level,topic:st.topic,period:st.period,started:new Date().toISOString()};
+    persist();
+    go('quiz');
+  }
   function quiz(){
     const s=state.session;if(!s){go('home');return;}const q=s.paper[s.index],chosen=s.answers[q.id];
     el.innerHTML=`<div class="row"><span class="pill gold">${esc(C.levels[q.level])}</span><span class="hint">${s.index+1} / ${s.paper.length}</span></div><div class="progress"><i style="width:${s.index/s.paper.length*100}%"></i></div><p class="hint">${esc(q.period||'未分类时期')} · ${esc(q.topic||'综合')}${q.archived?' · 旧版错题档案':''}</p><h2 class="question">${esc(q.question)}</h2><div class="options" role="group" aria-label="选择答案">${Object.entries(q.options).map(([k,v])=>`<button class="option ${chosen?(k===q.answer?'correct':k===chosen?'wrong':''):''}" data-act="choose" data-value="${k}" ${chosen?'disabled':''} aria-pressed="false"><span class="letter">${k}</span><span>${esc(v)}</span></button>`).join('')}</div>
+      ${!chosen?`<button class="secondary full" data-act="dontknow" style="margin-top:12px">不知道，看解析</button>`:''}
       ${chosen?`<section class="card feedback ${chosen===q.answer?'good':'bad'}" aria-live="polite"><span class="eyebrow">${chosen===q.answer?'看对了条件':'再审一次局势'}</span><h2 style="margin-top:10px">${chosen===q.answer?'回答正确':'本题答错'}</h2><p><strong>正确答案：${q.answer} · ${esc(q.options[q.answer])}</strong></p><p>${esc(q.explanation)}</p>${q.option_explanations?`<details><summary>展开四项辨析</summary>${Object.entries(q.option_explanations).map(([k,v])=>`<div class="reason"><strong>${k}.</strong> ${esc(v)}</div>`).join('')}</details>`:''}<div class="source">${esc(q.source)}${q.source_locator?`<br>原文检索词：${esc(q.source_locator)}`:''}${safeURL(q.source_url)?`<br><a href="${safeURL(q.source_url)}" target="_blank" rel="noopener noreferrer">打开史料原文 ↗</a>`:''}</div></section>`:''}
       <div class="quiz-actions"><button class="secondary" data-act="pause">稍后继续</button><button class="primary" data-act="${chosen?'next':'submit'}" ${!chosen&&!selected?'disabled':''}>${chosen?(s.index+1===s.paper.length?'查看成绩':'下一题 →'):'提交答案'}</button></div><p class="hint">${storageOK?'进度已在本机保存，离开页面后可继续。':'当前记录未能保存，请在题库页导出备份。'}</p>`;
   }
@@ -160,7 +181,7 @@
   function history(){el.innerHTML=head('每一局，都有迹可循。','同一浏览器中保存的学习记录。')+`<section class="card">${state.scores.length?[...state.scores].reverse().map(r=>`<div class="list-item"><div class="row"><strong style="font-size:25px;color:var(--gold)">${r.score} <small style="font-size:12px">分</small></strong><span class="hint">${esc(time(r.time))}</span></div><p>${esc(C.levels[r.level]||'混合')} · ${esc(r.mode)} · 正确 ${r.correct}/${r.total}<br>${esc(r.period||'全部时期')} · ${esc(r.topic||'全部专题')}</p></div>`).join(''):'<div class="empty">还没有成绩。完成一轮后自动记录。</div>'}</section>`;}
   function library(){el.innerHTML=head('一座随身小书库。','题目留在题库里，学习记录留在你手里。')+`<section class="card"><h2>${active().length} 道可练题</h2><p class="subtitle" style="margin-bottom:10px">${Object.entries(C.levels).map(([k,v])=>v+' '+active().filter(q=>q.level===k).length).join(' · ')}</p><p class="hint">按历史时期与专题双维度筛选；新题附史书出处及解析，另保留25道旧题档案。</p></section>
       <section class="card"><h2>题库批量导入</h2><p class="subtitle">支持 JSON / CSV；CSV可用Excel填写后另存为UTF-8。</p><div class="row"><button class="secondary" data-act="template-json">JSON模板</button><button class="secondary" data-act="template-csv">CSV模板</button></div><label class="section-label" for="question-file">选择题库文件</label><input class="file-picker" type="file" id="question-file" accept=".json,.csv"><div id="import-result"></div><p class="hint">格式检查不等于史实审核。须填写答案、解析、出处；同号不同内容会报错，不覆盖。</p></section>
-      <section class="card"><h2>学习记录备份</h2><p class="subtitle">换手机、换浏览器或清理浏览器前，先保存备份。</p><button class="secondary full" data-act="export">导出学习记录与自定义题库</button><label class="section-label" for="record-file">导入备份 / 旧版Python记录</label><input class="file-picker" type="file" id="record-file" accept=".json"><p class="hint">导入会替换成绩与错题；旧版Python记录没有自定义题库时保留此处已导入的题库。浏览器备份含自定义题库与未完试炼。</p></section>
+      <section class="card"><h2>学习记录备份</h2><p class="subtitle">换手机、换浏览器或清理浏览器前，先保存备份。</p><button class="secondary full" data-act="export">导出学习记录与自定义题库</button><label class="section-label" for="record-file">导入备份 / 旧版Python记录</label><input class="file-picker" type="file" id="record-file" accept=".json"><p class="hint">导入会替换成绩与错题；旧版Python记录没有自定义题库时保留此处已导入的题库。浏览器备份含自定义题库与未完试炼。</p><button class="secondary full" data-act="clear-records" style="margin-top:14px;color:var(--red);border-color:var(--red)">清除所有做题记录</button></section>
       <section class="card"><h2>阅读设置</h2><div class="font-controls" style="margin:12px 0"><button class="secondary" data-act="theme">${state.settings.theme==='dark'?'切换日间模式':'切换夜间模式'}</button></div><p class="hint">不播放声音、不强制倒计时。将网页添加到手机主屏幕，可快速打开；仍需网络打开网站。</p></section>`;
     document.querySelector('#question-file').addEventListener('change',importQuestions);document.querySelector('#record-file').addEventListener('change',importRecords);
   }
@@ -177,14 +198,16 @@
     else if(act==='pause'||act==='home')go('home');
     else if(act==='discard'){if(await confirmAction('结束这一轮','此轮未完成，不计入成绩。已完成的历史成绩保留。')){state.session=null;persist();home();}}
     else if(act==='choose'){selected=value;el.querySelectorAll('.option').forEach(b=>{b.classList.toggle('selected',b.dataset.value===value);b.setAttribute('aria-pressed',String(b.dataset.value===value));});el.querySelector('[data-act=submit]').disabled=false;}
+    else if(act==='dontknow'){const s=state.session;if(!s||s.answers[s.paper[s.index].id])return;s.answers[s.paper[s.index].id]='?';persist();quiz();}
     else if(act==='submit'){const s=state.session;if(!s||!selected||s.answers[s.paper[s.index].id])return;s.answers[s.paper[s.index].id]=selected;persist();quiz();}
     else if(act==='next'){const s=state.session;if(!s||!s.answers[s.paper[s.index].id])return;if(s.index+1===s.paper.length)finish();else{s.index++;selected='';persist();quiz();window.scrollTo(0,0);}}
     else if(act==='review'){state.settings.mode='错题复习';state.settings.level='all';state.settings.topic='全部专题';state.settings.period='全部时期';persist();go('home');}
-    else if(act==='theme'){document.querySelector('#theme').click();route();}
+    else if(act==='theme'){document.querySelector('#theme').click();document.querySelectorAll('[data-act="theme"]').forEach(b=>b.textContent=state.settings.theme==='dark'?'切换日间模式':'切换夜间模式');}
     else if(act==='template-json')download('三国题库模板.json',JSON.stringify(template(),null,2));
     else if(act==='template-csv')download('三国题库模板.csv',csvTemplate(),'text/csv;charset=utf-8');
     else if(act==='import-commit'){if(!plan||plan.errors.length||!plan.rows.length)return;const existing=new Set(bank().map(q=>q.id));if(plan.rows.some(q=>existing.has(q.id))){msg('题库已变化，请重新选择文件检查。');return;}const previous=state.custom;state.custom=[...previous,...plan.rows];if(!persist()){state.custom=previous;msg('保存失败，没有写入这批题目。请先导出备份并检查浏览器存储。');return;}msg(`成功新增${plan.rows.length}题。`);plan=null;library();}
     else if(act==='export')exportRecords();
+    else if(act==='clear-records'){if(await confirmAction('清除做题记录','将清除全部成绩、错题本和未完成试炼；自定义题库与设置保留。此操作不可撤销。')){state.scores=[];state.mistakes={};state.session=null;lastResult=null;persist();msg('做题记录已清除。');library();}}
   });
   route();
 })();
